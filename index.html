@@ -3,132 +3,202 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>MUS 679 EQ Trainer</title>
-<link rel="stylesheet" href="styles.css" />
+<title>MUS 679 Audio Trainer</title>
+<link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
 <div class="app">
   <header class="topbar">
     <div class="brand">
+      <button class="hamburger" id="hamburgerBtn" aria-label="Open menu">
+        <span></span><span></span><span></span>
+      </button>
       <div class="brand-mark"></div>
       <div class="brand-text">
-        <h1>MUS 679 EQ trainer</h1>
+        <h1><span class="brand-prefix">MUS 679</span> <span id="toolName">Mono / Stereo</span></h1>
       </div>
     </div>
-    <div class="mode-toggle" role="tablist">
+    <div class="mode-toggle" id="eqModeToggle" role="tablist" style="display:none;">
       <button id="modePlay" class="active" role="tab">Play</button>
       <button id="modeQuiz" role="tab">Quiz</button>
     </div>
   </header>
 
-  <!-- PLAY MODE -->
-  <section id="playPanel">
-    <div class="card">
-      <div class="eq-display">
-        <canvas id="eqCanvas"></canvas>
+  <!-- Side menu (hamburger) -->
+  <div class="menu-overlay" id="menuOverlay"></div>
+  <nav class="side-menu" id="sideMenu" aria-hidden="true">
+    <div class="menu-header">
+      <span class="menu-title">MUS 679</span>
+      <button class="menu-close" id="menuCloseBtn" aria-label="Close menu">×</button>
+    </div>
+    <button class="menu-item active" data-tool="monoStereo">
+      <span class="menu-icon">🔊</span>
+      <span class="menu-label">Mono / Stereo</span>
+    </button>
+    <button class="menu-item" data-tool="eq">
+      <span class="menu-icon">🎛</span>
+      <span class="menu-label">EQ Trainer</span>
+    </button>
+  </nav>
+
+  <!-- ============================================================= -->
+  <!-- TOOL: EQ TRAINER                                                -->
+  <!-- ============================================================= -->
+  <div id="eqTool" class="tool-panel">
+
+    <!-- PLAY MODE -->
+    <section id="playPanel">
+      <div class="card">
+        <div class="eq-display">
+          <canvas id="eqCanvas"></canvas>
+        </div>
+        <div class="eq-controls">
+          <div class="knob-group freq">
+            <div class="knob-label">
+              <span class="name">Frequency</span>
+              <span class="value"><span id="freqVal">1</span><span class="unit" id="freqUnit">kHz</span></span>
+            </div>
+            <input type="range" id="freqSlider" min="0" max="7" value="4" step="1" list="freqStops" />
+            <datalist id="freqStops">
+              <option value="0"></option><option value="1"></option><option value="2"></option>
+              <option value="3"></option><option value="4"></option><option value="5"></option>
+              <option value="6"></option><option value="7"></option>
+            </datalist>
+          </div>
+          <div class="knob-group gain">
+            <div class="knob-label">
+              <span class="name">Gain</span>
+              <span class="value"><span id="gainVal">0</span><span class="unit">dB</span></span>
+            </div>
+            <input type="range" id="gainSlider" min="-18" max="18" value="0" step="1" />
+          </div>
+          <div class="knob-group q">
+            <div class="knob-label">
+              <span class="name">Q</span>
+              <span class="value"><span id="qVal">1</span></span>
+            </div>
+            <input type="range" id="qSlider" min="1" max="18" value="1" step="1" />
+          </div>
+          <button id="bypassBtn" class="bypass-btn">Bypass</button>
+        </div>
       </div>
-      <div class="eq-controls">
-        <div class="knob-group freq">
-          <div class="knob-label">
-            <span class="name">Frequency</span>
-            <span class="value"><span id="freqVal">1</span><span class="unit" id="freqUnit">kHz</span></span>
+
+      <div class="card">
+        <h2>Audio Source</h2>
+        <div class="source-row">
+          <div class="dropzone" id="dropzone">
+            <div class="dz-icon" id="dropzoneIcon">🎵</div>
+            <div class="dz-title" id="dropzoneTitle">Drop an audio file</div>
+            <div class="dz-hint" id="dropzoneHint">or click to browse — mp3, wav, m4a, ogg</div>
+            <input type="file" id="fileInput" accept="audio/*" hidden />
           </div>
-          <input type="range" id="freqSlider" min="0" max="7" value="4" step="1" list="freqStops" />
-          <datalist id="freqStops">
-            <option value="0"></option><option value="1"></option><option value="2"></option>
-            <option value="3"></option><option value="4"></option><option value="5"></option>
-            <option value="6"></option><option value="7"></option>
-          </datalist>
-        </div>
-        <div class="knob-group gain">
-          <div class="knob-label">
-            <span class="name">Gain</span>
-            <span class="value"><span id="gainVal">0</span><span class="unit">dB</span></span>
+          <div class="sample-list" id="sampleList">
+            <button class="sample-btn" data-source="pink">
+              <span class="play-icon">▶</span>
+              <span class="sample-name">Pink Noise</span>
+            </button>
           </div>
-          <input type="range" id="gainSlider" min="-18" max="18" value="0" step="1" />
         </div>
-        <div class="knob-group q">
-          <div class="knob-label">
-            <span class="name">Q</span>
-            <span class="value"><span id="qVal">1</span></span>
-          </div>
-          <input type="range" id="qSlider" min="1" max="18" value="1" step="1" />
-        </div>
-        <button id="bypassBtn" class="bypass-btn">Bypass</button>
       </div>
+    </section>
+
+    <!-- QUIZ MODE -->
+    <section id="quizPanel" class="quiz-panel">
+      <div class="card">
+        <div class="quiz-header">
+          <div class="left">
+            <h2>Quiz Mode</h2>
+            <p>Which frequency is boosted?</p>
+          </div>
+          <div class="score">
+            <div class="pill" id="scorePill">0 / 0</div>
+          </div>
+        </div>
+
+        <div class="difficulty-row">
+          <span class="diff-label">Difficulty</span>
+          <div class="diff-group" id="diffGroup">
+            <button class="diff-btn" data-diff="easy">Easy</button>
+            <button class="diff-btn active" data-diff="medium">Medium</button>
+            <button class="diff-btn" data-diff="hard">Hard</button>
+          </div>
+        </div>
+
+        <div class="source-row quiz-source-row">
+          <div class="dropzone" id="quizDropzone">
+            <div class="dz-icon" id="quizDropzoneIcon">🎵</div>
+            <div class="dz-title" id="quizDropzoneTitle">Drop an audio file</div>
+            <div class="dz-hint" id="quizDropzoneHint">or click to browse — mp3, wav, m4a, ogg</div>
+            <input type="file" id="quizFileInput" accept="audio/*" hidden />
+          </div>
+          <div class="sample-list" id="quizSampleList">
+            <button class="sample-btn" data-qsource="pink">
+              <span class="play-icon">▶</span>
+              <span class="sample-name">Pink Noise</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="dry-eq-toggle" id="dryEqToggle" role="switch" aria-checked="false" tabindex="0" aria-disabled="true">
+          <span class="toggle-label left">Dry</span>
+          <div class="toggle-track"><div class="toggle-knob"></div></div>
+          <span class="toggle-label right">EQ'd</span>
+        </div>
+
+        <div class="freq-guess" id="freqGuess"></div>
+
+        <div class="quiz-actions">
+          <div class="feedback" id="quizFeedback">Select a source to start.</div>
+          <button class="btn primary" id="quizAction" disabled>New Question</button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ============================================================= -->
+  <!-- TOOL: MONO / STEREO CONVERTER                                   -->
+  <!-- ============================================================= -->
+  <div id="monoStereoTool" class="tool-panel" style="display:none;">
+
+    <div class="card ms-intro">
+      <h2>Mono / Stereo</h2>
+      <p class="ms-lede">Flip the stereo image to a summed mono mix. What do you hear?</p>
+    </div>
+
+    <div class="card ms-viz-card">
+      <div class="ms-viz">
+        <canvas id="msCanvas"></canvas>
+        <div class="ms-viz-label left">L</div>
+        <div class="ms-viz-label right">R</div>
+        <div class="ms-viz-hint">What am I looking at here?? This is a Stereoscope, a tool to visually plot how wide or narrow the stereo image is. The more horizontal the spread, the wider the stereo image. A straight vertical line means the left and right channels are identical (mono).</div>
+      </div>
+      <div class="dry-eq-toggle ms-toggle" id="monoToggle" role="switch" aria-checked="false" tabindex="0" aria-disabled="true">
+        <span class="toggle-label left">Stereo</span>
+        <div class="toggle-track"><div class="toggle-knob"></div></div>
+        <span class="toggle-label right">Mono</span>
+      </div>
+      <p class="ms-status" id="msStatus">Select a source to start.</p>
     </div>
 
     <div class="card">
       <h2>Audio Source</h2>
       <div class="source-row">
-        <div class="dropzone" id="dropzone">
-          <div class="dz-icon" id="dropzoneIcon">🎵</div>
-          <div class="dz-title" id="dropzoneTitle">Drop an audio file</div>
-          <div class="dz-hint" id="dropzoneHint">or click to browse — mp3, wav, m4a, ogg</div>
-          <input type="file" id="fileInput" accept="audio/*" hidden />
+        <div class="dropzone" id="msDropzone">
+          <div class="dz-icon" id="msDropzoneIcon">🎵</div>
+          <div class="dz-title" id="msDropzoneTitle">Drop an audio file</div>
+          <div class="dz-hint" id="msDropzoneHint">or click to browse — mp3, wav, m4a, ogg</div>
+          <input type="file" id="msFileInput" accept="audio/*" hidden />
         </div>
-        <div class="sample-list" id="sampleList">
-          <button class="sample-btn" data-source="pink">
-            <span class="play-icon">▶</span>
-            <span class="sample-name">Pink Noise</span>
-          </button>
+        <div class="sample-list" id="msSampleList">
+          <!-- populated from script -->
         </div>
       </div>
     </div>
-  </section>
 
-  <!-- QUIZ MODE -->
-  <section id="quizPanel" class="quiz-panel">
-    <div class="card">
-      <div class="quiz-header">
-        <div class="left">
-          <h2>Quiz Mode</h2>
-          <p>Which frequency is boosted?</p>
-        </div>
-        <div class="score">
-          <div class="pill" id="scorePill">0 / 0</div>
-        </div>
-      </div>
+  </div>
 
-      <div class="difficulty-row">
-        <span class="diff-label">Difficulty</span>
-        <div class="diff-group" id="diffGroup">
-          <button class="diff-btn" data-diff="easy">Easy</button>
-          <button class="diff-btn active" data-diff="medium">Medium</button>
-          <button class="diff-btn" data-diff="hard">Hard</button>
-        </div>
-      </div>
-
-      <div class="source-row quiz-source-row">
-        <div class="dropzone" id="quizDropzone">
-          <div class="dz-icon" id="quizDropzoneIcon">🎵</div>
-          <div class="dz-title" id="quizDropzoneTitle">Drop an audio file</div>
-          <div class="dz-hint" id="quizDropzoneHint">or click to browse — mp3, wav, m4a, ogg</div>
-          <input type="file" id="quizFileInput" accept="audio/*" hidden />
-        </div>
-        <div class="sample-list" id="quizSampleList">
-          <button class="sample-btn" data-qsource="pink">
-            <span class="play-icon">▶</span>
-            <span class="sample-name">Pink Noise</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="dry-eq-toggle" id="dryEqToggle" role="switch" aria-checked="false" tabindex="0" aria-disabled="true">
-        <span class="toggle-label left">Dry</span>
-        <div class="toggle-track"><div class="toggle-knob"></div></div>
-        <span class="toggle-label right">EQ'd</span>
-      </div>
-
-      <div class="freq-guess" id="freqGuess"></div>
-
-      <div class="quiz-actions">
-        <div class="feedback" id="quizFeedback">Select a source to start.</div>
-        <button class="btn primary" id="quizAction" disabled>New Question</button>
-      </div>
-    </div>
-  </section>
 </div>
-<script src="script.js"></script>
+<script src="script.js?v=5"></script>
 </body>
 </html>
