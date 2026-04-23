@@ -28,7 +28,7 @@ const DIFFICULTY = {
   medium: { gain: 9, Q: 9 },
   hard:   { gain: 4.5, Q: 6 },
 };
-let quizDifficulty = "medium";
+let quizDifficulty = "easy";
 const FREQ_STOPS = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
 
 /* =====================================================================
@@ -36,9 +36,16 @@ const FREQ_STOPS = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
 ===================================================================== */
 let ctx = null;
 let filter, masterGain, analyser;
+// Mono/Stereo graph nodes
+let msInput, msSplitter, msMerger, msStereoGain, msMonoGain;
+// Stereo vectorscope per-channel analysers
+let vizSplitter, leftAnalyser, rightAnalyser;
 let currentSource = null;
 let isPlaying = false;
 let pinkBuffer = null;
+
+// Which top-level tool is active: "eq" or "monoStereo" — drives the audio graph.
+let currentTool = "monoStereo";
 
 // Track playback position so we can "pause" (Web Audio sources are one-shot)
 let sourceStartTime = 0;   // ctx.currentTime when the source started
@@ -66,11 +73,51 @@ function ensureCtx() {
   analyser = ctx.createAnalyser();
   analyser.fftSize = 2048;
 
+  // --- Mono/Stereo graph (always built; we route through it only when the
+  // Mono/Stereo tool is active). The source connects to msInput. msInput fans
+  // out to two paths and we crossfade with the two gain nodes:
+  //   msInput -> msStereoGain -> masterGain         (stereo path)
+  //   msInput -> msSplitter -(L,R)-> msMerger(0) -> msMonoGain -> masterGain
+  msInput = ctx.createGain();
+  msStereoGain = ctx.createGain();
+  msStereoGain.gain.value = 1;
+  msMonoGain = ctx.createGain();
+  msMonoGain.gain.value = 0;
+  msSplitter = ctx.createChannelSplitter(2);
+  msMerger = ctx.createChannelMerger(1);
+
+  msInput.connect(msStereoGain);
+  msStereoGain.connect(masterGain);
+
+  msInput.connect(msSplitter);
+  msSplitter.connect(msMerger, 0, 0);
+  msSplitter.connect(msMerger, 1, 0);
+  msMerger.connect(msMonoGain);
+  msMonoGain.connect(masterGain);
+
   filter.connect(masterGain);
   masterGain.connect(analyser);
   analyser.connect(ctx.destination);
 
+  // --- Stereo vectorscope: per-channel analysers tapped off masterGain ---
+  vizSplitter = ctx.createChannelSplitter(2);
+  leftAnalyser = ctx.createAnalyser();
+  leftAnalyser.fftSize = 1024;
+  leftAnalyser.smoothingTimeConstant = 0;
+  rightAnalyser = ctx.createAnalyser();
+  rightAnalyser.fftSize = 1024;
+  rightAnalyser.smoothingTimeConstant = 0;
+  masterGain.connect(vizSplitter);
+  vizSplitter.connect(leftAnalyser, 0);
+  vizSplitter.connect(rightAnalyser, 1);
+
   return ctx;
+}
+
+/** Returns the node a buffer source should connect to for the active tool. */
+function currentInputNode() {
+  ensureCtx();
+  return currentTool === "monoStereo" ? msInput : filter;
 }
 
 function createPinkNoise(durationSec = 4) {
@@ -90,7 +137,8 @@ function createPinkNoise(durationSec = 4) {
       b5 = -0.7616 * b5 - white * 0.0168980;
       const pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
       b6 = white * 0.115926;
-      data[i] = pink;
+      // Target ~60% of original perceived loudness — amplitude ~0.4 gives ~-8dB.
+      data[i] = pink * 0.4;
     }
   }
   return buf;
@@ -146,7 +194,7 @@ function playBuffer(buf, startOffset = 0) {
   const src = ctx.createBufferSource();
   src.buffer = buf;
   src.loop = true;
-  src.connect(filter);
+  src.connect(currentInputNode());
   src.start(0, startOffset % buf.duration);
   currentSource = src;
   sourceStartTime = ctx.currentTime;
@@ -689,6 +737,24 @@ async function selectQuizClip(index, btnEl) {
 }
 
 async function selectQuizSource(src, btnEl) {
+  ensureCtx();
+  const srcEl = (src === "file") ? quizDropzone : btnEl;
+
+  // If clicking the already-active source, toggle play/pause (don't restart).
+  if (quizState.source === src && activeSourceEl === srcEl) {
+    try {
+      const buf = await getQuizBuffer();
+      if (!buf) return;
+      applyQuizEQ(quizState.toggle === "dry");
+      togglePlayback(srcEl, buf);
+    } catch (err) {
+      alert("Could not load source: " + err.message);
+    }
+    updateQuizUI();
+    return;
+  }
+
+  // Switching sources — full selection flow.
   quizState.source = src;
 
   // UI: mark the selected source element
@@ -713,9 +779,9 @@ async function selectQuizSource(src, btnEl) {
     const buf = await getQuizBuffer();
     if (!buf) return;
     applyQuizEQ(quizState.toggle === "dry");
+    sourceOffset = 0;
     playBuffer(buf, 0);
     // Put the focus/active state on the source UI element
-    const srcEl = (src === "file") ? quizDropzone : btnEl;
     setActiveSourceEl(srcEl);
   } catch (err) {
     alert("Could not load source: " + err.message);
@@ -932,16 +998,308 @@ function updateQuizUI() {
 }
 
 /* =====================================================================
+   MONO / STEREO TOOL
+===================================================================== */
+const msDropzone = document.getElementById("msDropzone");
+const msFileInput = document.getElementById("msFileInput");
+const msSampleList = document.getElementById("msSampleList");
+const monoToggle = document.getElementById("monoToggle");
+const msStatus = document.getElementById("msStatus");
+
+const msState = {
+  source: null,       // null | "file" | clip index (number)
+  userBuffer: null,
+  userFileName: null,
+  isMono: false,
+};
+
+function buildMsSources() {
+  msSampleList.innerHTML = "";
+  SAMPLE_CLIPS.forEach((clip, i) => {
+    const btn = document.createElement("button");
+    btn.className = "sample-btn";
+    btn.dataset.msSource = "clip";
+    btn.dataset.msClip = String(i);
+    btn.innerHTML =
+      `<span class="play-icon">▶</span>` +
+      `<span class="sample-name">${escapeHtml(clip.name)}</span>`;
+    btn.addEventListener("click", () => handleMsSampleClick(btn, clip, i));
+    msSampleList.appendChild(btn);
+  });
+}
+
+async function handleMsSampleClick(btn, clip, index) {
+  ensureCtx();
+  const existing = getSourceBuffer(btn);
+  if (existing && existing.buffer) {
+    msState.source = index;
+    togglePlayback(btn, existing.buffer);
+    updateMsUI();
+    return;
+  }
+  const icon = btn.querySelector(".play-icon");
+  const prev = icon.textContent;
+  icon.textContent = "…";
+  try {
+    const buf = await loadUrl(clip.url);
+    setSourceBuffer(btn, buf);
+    msState.source = index;
+    togglePlayback(btn, buf);
+    updateMsUI();
+  } catch (err) {
+    alert("Could not load clip: " + err.message + "\n\nMake sure the S3 bucket allows CORS GET from this origin.");
+    icon.textContent = prev;
+  }
+}
+
+// Mono/Stereo drop zone
+msFileInput.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (file) await handleMsFile(file);
+  msFileInput.value = "";
+});
+["dragenter", "dragover"].forEach((ev) =>
+  msDropzone.addEventListener(ev, (e) => { e.preventDefault(); msDropzone.classList.add("dragover"); })
+);
+["dragleave", "drop"].forEach((ev) =>
+  msDropzone.addEventListener(ev, (e) => { e.preventDefault(); msDropzone.classList.remove("dragover"); })
+);
+msDropzone.addEventListener("drop", async (e) => {
+  const file = e.dataTransfer.files[0];
+  if (file) await handleMsFile(file);
+});
+msDropzone.addEventListener("click", () => {
+  const entry = getSourceBuffer(msDropzone);
+  if (entry && entry.buffer) {
+    msState.source = "file";
+    togglePlayback(msDropzone, entry.buffer);
+    updateMsUI();
+  } else {
+    msFileInput.click();
+  }
+});
+
+async function handleMsFile(file) {
+  try {
+    const buf = await decodeFile(file);
+    msState.userBuffer = buf;
+    msState.userFileName = file.name;
+    msState.source = "file";
+    setSourceBuffer(msDropzone, buf, file.name);
+    markDropzoneLoaded(msDropzone, file.name);
+    togglePlayback(msDropzone, buf);
+    updateMsUI();
+  } catch (err) {
+    alert("Could not decode that file: " + err.message);
+  }
+}
+
+/** Crossfade between the stereo path and the summed-mono path. */
+function setMonoRouting(isMono) {
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  msStereoGain.gain.setTargetAtTime(isMono ? 0 : 1, now, 0.015);
+  msMonoGain.gain.setTargetAtTime(isMono ? 1 : 0, now, 0.015);
+}
+
+function handleMonoToggleClick() {
+  if (monoToggle.getAttribute("aria-disabled") === "true") return;
+  msState.isMono = !msState.isMono;
+  monoToggle.setAttribute("aria-checked", msState.isMono ? "true" : "false");
+  setMonoRouting(msState.isMono);
+  updateMsUI();
+}
+monoToggle.addEventListener("click", handleMonoToggleClick);
+monoToggle.addEventListener("keydown", (e) => {
+  if (e.key === " " || e.key === "Enter") { e.preventDefault(); handleMonoToggleClick(); }
+});
+
+function updateMsUI() {
+  const hasSource = msState.source != null;
+  monoToggle.setAttribute("aria-disabled", hasSource ? "false" : "true");
+  monoToggle.setAttribute("aria-checked", msState.isMono ? "true" : "false");
+  if (!hasSource) {
+    msStatus.textContent = "Select a source to start.";
+    msStatus.classList.remove("active");
+  } else {
+    msStatus.classList.add("active");
+    msStatus.textContent = msState.isMono
+      ? "Summed mono — both channels combined."
+      : "Stereo — left and right independent.";
+  }
+}
+
+/* =====================================================================
+   STEREO VECTORSCOPE — minimalist mid/side Lissajous
+===================================================================== */
+const msCanvas = document.getElementById("msCanvas");
+const msCtx = msCanvas ? msCanvas.getContext("2d") : null;
+
+function resizeMsCanvas() {
+  if (!msCanvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = msCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  msCanvas.width = rect.width * dpr;
+  msCanvas.height = rect.height * dpr;
+  msCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resizeMsCanvas);
+
+// Mode-driven scope color: lavender (matches the Stereo toggle) when stereo,
+// a darker gold for contrast (toggle uses --sun #ffd166) when mono.
+const VIZ_COLOR_STEREO = "#c29cf2";  // = var(--lavender)
+const VIZ_COLOR_MONO   = "#d9a836";  // darker than --sun for contrast on light bg
+
+function drawStereoViz() {
+  if (!msCtx || !msCanvas) return;
+  const w = msCanvas.clientWidth;
+  const h = msCanvas.clientHeight;
+  if (!w || !h) { requestAnimationFrame(drawStereoViz); return; }
+
+  // Motion-trail fade — matches the soft gradient bg so dots slowly disappear.
+  msCtx.fillStyle = "rgba(250, 252, 255, 0.18)";
+  msCtx.fillRect(0, 0, w, h);
+
+  // Faint center cross — the only structural ink on the scope.
+  msCtx.strokeStyle = "rgba(29, 35, 48, 0.08)";
+  msCtx.lineWidth = 1;
+  msCtx.beginPath();
+  msCtx.moveTo(w / 2, 0); msCtx.lineTo(w / 2, h);
+  msCtx.moveTo(0, h / 2); msCtx.lineTo(w, h / 2);
+  msCtx.stroke();
+
+  // Only animate when the mono/stereo tool is active and audio is playing.
+  if (currentTool !== "monoStereo" || !isPlaying || !leftAnalyser || !rightAnalyser) {
+    requestAnimationFrame(drawStereoViz);
+    return;
+  }
+
+  const N = leftAnalyser.fftSize;
+  const left = new Float32Array(N);
+  const right = new Float32Array(N);
+  leftAnalyser.getFloatTimeDomainData(left);
+  rightAnalyser.getFloatTimeDomainData(right);
+
+  const cx = w / 2, cy = h / 2;
+  const radius = Math.min(w, h) * 0.46;
+  const color = msState.isMono ? VIZ_COLOR_MONO : VIZ_COLOR_STEREO;
+
+  // Plot mid on Y-axis, side on X-axis, rotated 45° from raw L/R so mono lives
+  // on the vertical. Subsample for speed (every 2nd frame = ~512 dots). Single
+  // color avoids muddy-brown overlap artifacts from multi-hue blending.
+  msCtx.fillStyle = color;
+  for (let i = 0; i < N; i += 2) {
+    const L = left[i];
+    const R = right[i];
+    const mid  = (L + R) * 0.5;
+    const side = (L - R) * 0.5;
+
+    const x = cx + side * radius * 2;
+    const y = cy - mid  * radius * 2;
+
+    const amp = Math.min(1, Math.sqrt(mid * mid + side * side) * 1.5);
+
+    msCtx.globalAlpha = 0.3 + amp * 0.5;
+    msCtx.beginPath();
+    msCtx.arc(x, y, 1.4 + amp * 1.4, 0, Math.PI * 2);
+    msCtx.fill();
+  }
+  msCtx.globalAlpha = 1;
+
+  requestAnimationFrame(drawStereoViz);
+}
+
+/* =====================================================================
+   TOOL SWITCHING (hamburger menu)
+===================================================================== */
+const hamburgerBtn = document.getElementById("hamburgerBtn");
+const menuCloseBtn = document.getElementById("menuCloseBtn");
+const menuOverlay = document.getElementById("menuOverlay");
+const sideMenu = document.getElementById("sideMenu");
+const menuItems = document.querySelectorAll(".menu-item[data-tool]");
+const eqTool = document.getElementById("eqTool");
+const monoStereoTool = document.getElementById("monoStereoTool");
+const toolNameEl = document.getElementById("toolName");
+const eqModeToggle = document.getElementById("eqModeToggle");
+
+function openMenu() {
+  sideMenu.classList.add("open");
+  menuOverlay.classList.add("visible");
+  hamburgerBtn.classList.add("open");
+  sideMenu.setAttribute("aria-hidden", "false");
+}
+function closeMenu() {
+  sideMenu.classList.remove("open");
+  menuOverlay.classList.remove("visible");
+  hamburgerBtn.classList.remove("open");
+  sideMenu.setAttribute("aria-hidden", "true");
+}
+hamburgerBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  sideMenu.classList.contains("open") ? closeMenu() : openMenu();
+});
+menuCloseBtn.addEventListener("click", closeMenu);
+menuOverlay.addEventListener("click", closeMenu);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && sideMenu.classList.contains("open")) closeMenu();
+});
+
+menuItems.forEach((item) => {
+  item.addEventListener("click", () => {
+    const tool = item.dataset.tool;
+    setTool(tool);
+    closeMenu();
+  });
+});
+
+function setTool(tool) {
+  // Stop any audio when switching tools; the source was connected to the old
+  // tool's input node, so starting fresh in the new tool is the cleanest move.
+  stop();
+
+  if (tool === "eq") {
+    currentTool = "eq";
+    eqTool.style.display = "";
+    monoStereoTool.style.display = "none";
+    toolNameEl.textContent = "EQ trainer";
+    eqModeToggle.style.display = "";
+    applyEQ();
+  } else if (tool === "monoStereo") {
+    currentTool = "monoStereo";
+    eqTool.style.display = "none";
+    monoStereoTool.style.display = "";
+    toolNameEl.textContent = "Mono / Stereo";
+    eqModeToggle.style.display = "none";
+    // Park the EQ filter at unity so it doesn't color anything if any stray
+    // connection ever reached it.
+    if (ctx) filter.gain.setTargetAtTime(0, ctx.currentTime, 0.005);
+    // Apply the current mono/stereo routing state.
+    setMonoRouting(msState.isMono);
+    updateMsUI();
+    // Canvas was display:none until now — measure it on the next frame.
+    requestAnimationFrame(resizeMsCanvas);
+  }
+
+  menuItems.forEach((mi) => mi.classList.toggle("active", mi.dataset.tool === tool));
+}
+
+/* =====================================================================
    INIT
 ===================================================================== */
 function init() {
   buildSampleList();
   buildQuizButtons();
   buildQuizSources();
+  buildMsSources();
   resizeCanvas();
+  resizeMsCanvas();
   updateReadouts();
   drawEQ(sliderToFreq(+freqSlider.value), +gainSlider.value, +qSlider.value);
   updateQuizUI();
+  updateMsUI();
+  setTool("monoStereo");
+  requestAnimationFrame(drawStereoViz);
 }
 init();
 
